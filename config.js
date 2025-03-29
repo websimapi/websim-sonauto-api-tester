@@ -10,10 +10,16 @@ export const API_BASE_URL = 'https://api.sonauto.ai/v1';
 // - Ends with 'url=': Target URL is URI encoded and appended (e.g., proxy?url=encodedTarget)
 // - Ends with 'quest=': Target URL is URI encoded and appended (e.g., proxy?quest=encodedTarget)
 export const CORS_PROXIES = [
-    // 'https://corsproxy.io/?', // Seems to fail preflight for POST often
-    'https://api.cors.lol/?url=', // Seems more permissive for POST
-    'https://proxy.cors.sh/', // Path-based style, might require API key for POST now or be rate-limited. Keep as fallback.
+    // Prioritize proxies potentially supporting POST:
+    'https://thingproxy.freeboard.io/fetch/', // New attempt, path-based
+    'https://api.cors.lol/?url=', // Failed POST with 405 before, but maybe works for GET? Keep for status checks.
+    'https://proxy.cors.sh/', // Path-based style, often rate-limited or blocked for POST. Keep as last resort.
+    // Proxies known to fail or be GET-only:
+    // 'https://corsproxy.io/?', // Failed preflight for POST
     // 'https://api.codetabs.com/v1/proxy?quest=', // Only supports GET requests
+    // 'https://everyorigin.jwvbremen.nl/get?url=', // Likely GET only
+    // 'https://api.allorigins.win/get?url=', // Likely GET only
+    // 'https://crossorigin.me/', // Stability issues mentioned
 ];
 
 // Other potential configurations can be added here, e.g., default values, polling intervals etc.

@@ -9,20 +9,27 @@ import { API_BASE_URL, CORS_PROXIES, POLLING_INTERVAL_MS } from 'config';
  * @returns {string} The full URL including the proxy.
  */
 function constructProxyUrl(proxy, targetUrl) {
-    if (proxy.endsWith('/')) {
-        // Path-based proxy (e.g., https://proxy.cors.sh/)
-        return `${proxy}${targetUrl}`;
-    } else if (proxy.endsWith('?')) {
-         // Simple query param (e.g., https://corsproxy.io/?)
-        return `${proxy}${targetUrl}`;
-    } else if (proxy.endsWith('url=')) {
-        // Query param 'url' (e.g., https://api.cors.lol/?url=)
-        return `${proxy}${encodeURIComponent(targetUrl)}`;
-    } else if (proxy.endsWith('quest=')) {
+    // Ensure proxy URL has a trailing slash if needed for path appending
+    const proxyBase = proxy.endsWith('/') ? proxy : proxy; // Keep trailing slash if present
+
+    if (proxyBase.endsWith('/')) {
+        // Path-based proxy (e.g., https://proxy.cors.sh/, https://thingproxy.freeboard.io/fetch/)
+        // Remove leading slash from targetUrl if present to avoid double slash
+        const cleanTargetUrl = targetUrl.startsWith('/') ? targetUrl.substring(1) : targetUrl;
+        return `${proxyBase}${cleanTargetUrl}`;
+    } else if (proxy.includes('?url=')) {
+         // Query param 'url' (e.g., https://api.cors.lol/?url=)
+         // Ensure target URL is encoded
+        return `${proxyBase}${encodeURIComponent(targetUrl)}`;
+    } else if (proxy.includes('?quest=')) {
          // Query param 'quest' (e.g., https://api.codetabs.com/v1/proxy?quest=)
-         return `${proxy}${encodeURIComponent(targetUrl)}`;
+         return `${proxyBase}${encodeURIComponent(targetUrl)}`;
+    } else if (proxy.endsWith('?')) {
+         // Simple query param (e.g., https://corsproxy.io/?) - Less common now
+        return `${proxyBase}${targetUrl}`;
     } else {
-        console.warn(`Unknown proxy format: ${proxy}. Assuming simple prepend.`);
+        console.warn(`Unknown or ambiguous proxy format: ${proxy}. Assuming simple prepend.`);
+        // Fallback: append target URL, hoping for the best
         return `${proxy}${targetUrl}`;
     }
 }
@@ -47,43 +54,52 @@ async function callSonautoApi(endpoint, method, apiKey, body = null) {
 
     const baseHeaders = {
         'Authorization': `Bearer ${apiKey}`,
-        'X-Requested-With': 'XMLHttpRequest' // Might help some proxies
+        //'X-Requested-With': 'XMLHttpRequest' // Might help some proxies, but can also cause issues
     };
 
-    const options = {
-        method: method,
-        headers: { ...baseHeaders }, // Clone base headers
-        // 'mode': 'cors' is the default.
-        // 'cache': 'no-cache', // Might help bypass stale proxy responses, uncomment if needed
+    // Thingproxy explicitly mentions it *strips* Authorization headers by default.
+    // It might require custom headers to pass it through, but this is non-standard.
+    // Let's try adding 'X-Authorization' as a potential workaround for ThingProxy,
+    // though it's unlikely to work unless ThingProxy specifically supports it.
+    // Standard 'Authorization' will still be sent.
+    const potentialThingProxyHeader = {
+        'X-Authorization': `Bearer ${apiKey}`
     };
-
-    if (body && (method === 'POST' || method === 'PUT')) {
-        options.headers['Content-Type'] = 'application/json';
-        options.body = JSON.stringify(body);
-    }
-
-     // Add specific headers required by some proxies IF we know them
-     // Example for proxy.cors.sh if it required a key:
-     // if (url.startsWith('https://proxy.cors.sh/')) {
-     //    options.headers['x-cors-api-key'] = 'YOUR_CORS_SH_API_KEY'; // Replace with actual key if needed
-     // }
 
 
     let lastError = null;
 
     for (const url of urlsToTry) {
-        console.log(`Attempting API call: ${method} ${url}`);
+         console.log(`Attempting API call: ${method} ${url}`);
+
+        const options = {
+            method: method,
+            headers: { ...baseHeaders }, // Start with base headers for each attempt
+            // 'mode': 'cors' is the default. Do NOT set 'no-cors' as we need the response content.
+            // 'cache': 'no-cache', // Might help bypass stale proxy responses, uncomment if needed
+        };
+
+        if (body && (method === 'POST' || method === 'PUT')) {
+            options.headers['Content-Type'] = 'application/json';
+            options.body = JSON.stringify(body);
+        }
+
+         // Add potential proxy-specific headers ONLY for that proxy URL
+         if (url.startsWith('https://thingproxy.freeboard.io/')) {
+             // Add the custom header attempt for ThingProxy
+             // options.headers['X-Authorization'] = potentialThingProxyHeader['X-Authorization'];
+             // Note: ThingProxy docs say it *removes* Authorization. Sending it might be futile
+             // unless they have an undocumented way to pass it. Let's try standard first.
+             // If standard fails, we could try commenting out the standard 'Authorization' and
+             // *only* sending 'X-Authorization' for ThingProxy, but that's a long shot.
+             console.log("Attempting standard Authorization header with Thingproxy.");
+         }
+         // Remove potential proxy-specific headers if the current URL doesn't match
+         // else {
+         //    delete options.headers['X-Authorization']; // Clean up if it was added previously
+         // }
+
         try {
-            // Clear potential proxy-specific headers from previous attempts if needed
-            // (Currently not adding proxy-specific headers, so this is commented out)
-            // options.headers = { ...baseHeaders }; // Reset to base
-            // if (body && (method === 'POST' || method === 'PUT')) {
-            //     options.headers['Content-Type'] = 'application/json';
-            // }
-            // // Re-apply specific headers for *this* URL if necessary
-            // if (url.startsWith('...')) { options.headers['...'] = '...' }
-
-
             const response = await fetch(url, options);
 
             // Log response status regardless of success/failure for debugging
@@ -115,16 +131,25 @@ async function callSonautoApi(endpoint, method, apiKey, body = null) {
                  if (response.status === 0 || response.type === 'opaque' || response.type === 'error') {
                      errorPrefix = `Network/CORS Error`; // Status might be 0 for CORS block
                  }
-                 lastError = new Error(`${errorPrefix} via ${url}: ${errorMessage}`);
+                 // Add specific message for Thingproxy if it fails Auth
+                 if (url.startsWith('https://thingproxy.freeboard.io/') && response.status === 403) { // 403 Forbidden often indicates auth issues
+                    lastError = new Error(`${errorPrefix} via ${url}: ${errorMessage}. (Note: Thingproxy might strip Authorization headers)`);
+                 } else {
+                    lastError = new Error(`${errorPrefix} via ${url}: ${errorMessage}`);
+                 }
                  console.warn(`Attempt failed: ${lastError.message}`);
 
                  // Don't automatically continue if it's a 4xx error from the *API* (not the proxy)
                  // e.g., 401 Unauthorized (bad key), 400 Bad Request (bad payload)
                  // These errors won't be fixed by trying another proxy.
-                 if (url === directUrl && response.status >= 400 && response.status < 500) {
-                     console.error(`Received ${response.status} from direct API call, stopping retries.`);
+                 // Allow 401/403 to potentially retry via proxy IF the direct call failed CORS first
+                 const isDirectApiCall = url === directUrl;
+                 if (isDirectApiCall && response.status >= 400 && response.status < 500) {
+                      // Only stop if it's a client error from the *actual* API
+                     console.error(`Received ${response.status} from direct API call, stopping proxy retries.`);
                      throw lastError;
                  }
+
 
                  if (url === urlsToTry[urlsToTry.length - 1]) {
                     throw lastError; // Throw if it's the last attempt
@@ -140,10 +165,11 @@ async function callSonautoApi(endpoint, method, apiKey, body = null) {
             if (endpoint.startsWith('/generations/status/') && contentType && contentType.includes("text/plain")) {
                  return await response.text();
             }
-            if (endpoint.startsWith('/generations/status/')) {
-                // If status endpoint didn't return text/plain, read as text anyway for debugging
+             // If status endpoint didn't return text/plain, but was successful (2xx)
+            if (endpoint.startsWith('/generations/status/') && response.ok) {
+                // read as text anyway for debugging, maybe proxy wrapped it?
                 const statusText = await response.text();
-                console.warn(`Status endpoint ${url} returned content-type ${contentType}, not text/plain. Response body: ${statusText}`);
+                console.warn(`Status endpoint ${url} returned successful status (${response.status}) but content-type ${contentType}, not text/plain. Assuming text response: ${statusText}`);
                 // Attempt to return the text, hoping it's the status string
                 return statusText;
             }
@@ -163,7 +189,7 @@ async function callSonautoApi(endpoint, method, apiKey, body = null) {
             } catch (e) {
                 console.error(`Failed to parse JSON response from ${url}:`, e);
                 // Store the error but continue to try next URL unless it's the last one
-                lastError = new Error(`Received non-JSON response when JSON was expected from ${url}.`);
+                lastError = new Error(`Received non-JSON response when JSON was expected from ${url}. Body: ${responseText.substring(0, 100)}...`); // Include snippet of body
                  console.warn(`Attempt failed: ${lastError.message}`);
                  if (url === urlsToTry[urlsToTry.length - 1]) {
                     throw lastError; // Throw if it's the last attempt
@@ -239,8 +265,11 @@ export async function pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, 
 
     const statusEndpoint = `/generations/status/${taskId}`; // Endpoint only
     let timeoutId; // To store the setTimeout ID for potential cancellation
+    let cancelled = false; // Flag to prevent further actions if cancelled
 
     const poll = async () => {
+        if (cancelled) return; // Stop if cancelled
+
         try {
             // CallSonautoApi now handles direct/proxy attempts and returns text for status
             const status = await callSonautoApi(statusEndpoint, 'GET', apiKey);
@@ -287,7 +316,7 @@ export async function pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, 
                     messageType = 'info';
             }
 
-
+            if (cancelled) return; // Check again after async call
             // Update UI with the status string received
             onUpdate(`Status: ${currentStatus}`, messageType);
 
@@ -296,6 +325,7 @@ export async function pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, 
                 try {
                      onUpdate(`Fetching final result...`, 'info');
                     const result = await fetchGenerationResult(taskId, apiKey);
+                    if (cancelled) return; // Check again after async call
 
                      // Check if result fetch actually returned something meaningful
                      if (!result || typeof result !== 'object' || !result.id) {
@@ -325,17 +355,19 @@ export async function pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, 
                      }
 
                 } catch (fetchError) {
+                     if (cancelled) return; // Don't report error if cancelled during fetch
                     console.error(`Error fetching final result for task ${taskId}:`, fetchError);
                     onUpdate(`Error fetching final result: ${fetchError.message}`, 'FAILURE');
                     onFailure(fetchError); // Report the fetching error
                 } finally {
-                     if(onFinally) onFinally(); // Ensure button is re-enabled etc.
+                     if(onFinally && !cancelled) onFinally(); // Ensure button is re-enabled etc.
                 }
             } else {
                 // Poll again after a delay
-                timeoutId = setTimeout(poll, POLLING_INTERVAL_MS);
+                 timeoutId = setTimeout(poll, POLLING_INTERVAL_MS);
             }
         } catch (error) {
+            if (cancelled) return; // Don't report error if cancelled during poll
             // This catches errors from callSonautoApi during status polling or result fetching (if thrown above)
             console.error(`Error during polling/result fetch for task ${taskId}:`, error);
              const pollErrorMsg = `Polling failed: ${error.message || 'Unknown polling error.'}`;
@@ -352,7 +384,10 @@ export async function pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, 
      return () => {
         if (timeoutId) {
             clearTimeout(timeoutId);
+            cancelled = true; // Set the flag
             console.log(`Polling cancelled for task ${taskId}.`);
+             // Potentially call onFinally here as well if cancellation should re-enable UI immediately
+             // if (onFinally) onFinally();
         }
      };
 }
