@@ -255,18 +255,33 @@ export function getFormData(formElement) {
 export function setupBitrateSelect(outputFormatSelect, outputBitRateSelect) {
     const toggleBitrate = () => {
         const selectedFormat = outputFormatSelect.value;
-        // Use parentElement to target the container (assuming label wrapping select)
-        const bitrateContainer = outputBitRateSelect.closest('label').parentElement; // More robust way to find container
+        // Find the container div using closest()
+        const bitrateContainer = outputBitRateSelect.closest('.bitrate-container');
+
+        if (!bitrateContainer) {
+            console.error("Bitrate container element not found. Cannot toggle visibility.");
+             // Still try to enable/disable the select itself
+             outputBitRateSelect.disabled = !(selectedFormat === 'mp3' || selectedFormat === 'm4a');
+             if (outputBitRateSelect.disabled) {
+                outputBitRateSelect.value = '';
+             }
+            return;
+        }
+
         if (selectedFormat === 'mp3' || selectedFormat === 'm4a') {
             outputBitRateSelect.disabled = false;
-            if (bitrateContainer) bitrateContainer.style.display = ''; // Show container
+            bitrateContainer.style.display = ''; // Show container
         } else {
             outputBitRateSelect.disabled = true;
             outputBitRateSelect.value = ''; // Reset value
-            if (bitrateContainer) bitrateContainer.style.display = 'none'; // Hide container
+            bitrateContainer.style.display = 'none'; // Hide container
         }
     };
 
-    outputFormatSelect.addEventListener('change', toggleBitrate);
-    toggleBitrate(); // Initial setup
+    if (outputFormatSelect && outputBitRateSelect) {
+        outputFormatSelect.addEventListener('change', toggleBitrate);
+        toggleBitrate(); // Initial setup
+    } else {
+        console.error("Output format or bitrate select element not found during setup.");
+    }
 }

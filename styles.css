@@ -143,10 +143,19 @@ button:disabled {
 
 label[for="outputBitRate"] + select:disabled,
 label[for="outputBitRate"] select:disabled {
+    /* This rule might be less effective now with the container */
 }
 
-.bitrate-container { 
+/* Style the container directly */
+.bitrate-container {
+    /* Add any specific container styling if needed, e.g., margins */
+     margin-top: 15px; /* Keep consistent spacing */
 }
+/* Hide the container initially if needed, JS will control display */
+/* .bitrate-container {
+    display: none;
+} */
+
 
 #statusMessages p,
 #resultsContainer p:first-child:not(.result-item) { 

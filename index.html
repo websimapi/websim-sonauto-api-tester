@@ -53,14 +53,16 @@
                     <option value="m4a">m4a</option>
                  </select>
 
-                 <label for="outputBitRate">Output Bit Rate (kbps, optional for mp3/m4a):</label>
-                 <select id="outputBitRate">
-                    <option value="">Default</option>
-                    <option value="128">128</option>
-                    <option value="192">192</option>
-                    <option value="256">256</option>
-                    <option value="320">320</option>
-                 </select>
+                 <div class="bitrate-container">
+                     <label for="outputBitRate">Output Bit Rate (kbps, optional for mp3/m4a):</label>
+                     <select id="outputBitRate">
+                        <option value="">Default</option>
+                        <option value="128">128</option>
+                        <option value="192">192</option>
+                        <option value="256">256</option>
+                        <option value="320">320</option>
+                     </select>
+                 </div>
 
                 <button type="submit" id="generateButton">Generate Song</button>
             </form>
