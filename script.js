@@ -43,23 +43,39 @@ saveApiKeyButton.addEventListener('click', () => {
 
 // Function to add status messages
 function addStatusMessage(message, type = 'info', taskId = null) {
-    if (taskId && statusMessages.querySelector(`[data-task-id="${taskId}"]`)) {
+    let existingMsg = null;
+    if (taskId) {
+        existingMsg = statusMessages.querySelector(`[data-task-id="${taskId}"]`);
+    }
+
+    const fullMessage = taskId ? `Task ${taskId}: ${message}` : message;
+    let cssClass = 'status-update';
+    // Map specific status types to CSS classes
+    if (type === 'SUCCESS') {
+        cssClass += ' SUCCESS';
+    } else if (type === 'FAILURE') {
+        cssClass += ' FAILURE';
+    } else {
+        cssClass += ' info'; // Default or other intermediate statuses
+    }
+
+
+    if (existingMsg) {
         // Update existing status message for this task
-        const existingMsg = statusMessages.querySelector(`[data-task-id="${taskId}"]`);
-        existingMsg.textContent = `Task ${taskId}: ${message}`;
-        existingMsg.className = `status-update ${type}`; // Update class for styling
+        existingMsg.textContent = fullMessage;
+        existingMsg.className = cssClass; // Update class for styling
     } else {
          // Add new status message
         const p = document.createElement('p');
-        p.textContent = taskId ? `Task ${taskId}: ${message}` : message;
-        p.className = `status-update ${type}`;
+        p.textContent = fullMessage;
+        p.className = cssClass;
         if (taskId) {
             p.dataset.taskId = taskId;
         }
-        // Remove placeholder if it exists
+        // Remove placeholder if it exists and we're adding the first real message
         const placeholder = statusMessages.querySelector('p:not(.status-update)');
-        if (placeholder && placeholder.textContent.includes('Submit a generation request')) {
-            statusMessages.innerHTML = ''; // Clear placeholder
+         if (placeholder && placeholder.textContent.includes('Submit a generation request')) {
+            statusMessages.innerHTML = ''; // Clear placeholder only once
         }
         statusMessages.appendChild(p);
     }
@@ -70,17 +86,19 @@ function handleApiError(error, taskId = null) {
     console.error('API Error:', error);
     const message = `Error: ${error.message || 'An unknown error occurred.'}`;
     addStatusMessage(message, 'FAILURE', taskId);
-    generateButton.disabled = false; // Re-enable button on error
+    // Don't re-enable the button here if it's a polling error, only on initial submit failure
+    // generateButton.disabled = false;
 }
 
 // Function to check generation status
 async function checkStatus(taskId) {
     if (!apiKey) {
         addStatusMessage('Error: API Key is required to check status.', 'FAILURE');
-        return;
+        return; // Cannot continue without API key
     }
 
-    addStatusMessage(`Checking status...`, 'info', taskId);
+    // Don't spam "Checking status..." messages, update the existing task message
+    // addStatusMessage(`Checking status...`, 'info', taskId);
 
     const statusUrl = `${API_BASE_URL}/generations/status/${taskId}`;
     const headers = {
@@ -89,24 +107,38 @@ async function checkStatus(taskId) {
 
     try {
         const response = await fetch(statusUrl, { headers });
+
+        // Handle potential non-OK responses during polling (e.g., 404 if task expires)
         if (!response.ok) {
-            const errorData = await response.text(); // Use text() first as response might not be JSON
-            throw new Error(`HTTP error! status: ${response.status}, message: ${errorData}`);
+             if (response.status === 404) {
+                 throw new Error(`Task ID ${taskId} not found or expired.`);
+             }
+            const errorText = await response.text(); // Get text for non-JSON errors
+            throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
         }
 
         const status = await response.text(); // Status endpoint returns plain text
-        addStatusMessage(`Status: ${status}`, status, taskId);
+        console.log(`Task ${taskId} Status: ${status}`);
+
+        // Determine message type for styling
+        let messageType = 'info';
+        if (status === 'SUCCESS') messageType = 'SUCCESS';
+        if (status === 'FAILURE') messageType = 'FAILURE';
+
+        addStatusMessage(`Status: ${status}`, messageType, taskId);
 
         if (status === 'SUCCESS' || status === 'FAILURE') {
-            // Fetch full generation details if finished
+            // Fetch full generation details as it's finished
             fetchGenerationResult(taskId, status === 'FAILURE');
         } else {
             // Poll again after a delay
             setTimeout(() => checkStatus(taskId), 5000); // Check every 5 seconds
         }
     } catch (error) {
+        // Handle errors during polling specifically for this task
         handleApiError(error, taskId);
         // Stop polling on error for this task
+         generateButton.disabled = false; // Re-enable button if polling fails definitively
     }
 }
 
@@ -114,13 +146,9 @@ async function checkStatus(taskId) {
 // Function to fetch the final result
 async function fetchGenerationResult(taskId, isFailure = false) {
      if (!apiKey) {
-        addStatusMessage('Error: API Key is required to fetch results.', 'FAILURE');
+        addStatusMessage('Error: API Key is required to fetch results.', 'FAILURE', taskId);
+        generateButton.disabled = false; // Re-enable button
         return;
-    }
-    if (isFailure) {
-        addStatusMessage(`Generation failed. Check logs or API dashboard for details.`, 'FAILURE', taskId);
-        // Optionally fetch details even on failure to get error message
-        // return; // Stop if you don't want to fetch details on failure
     }
 
     addStatusMessage(`Fetching final result...`, 'info', taskId);
@@ -133,25 +161,31 @@ async function fetchGenerationResult(taskId, isFailure = false) {
     try {
         const response = await fetch(resultUrl, { headers });
          if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response.' }));
-            throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.message || 'Unknown error'}`);
+            const errorData = await response.json().catch(() => ({ message: `Failed to parse error response (Status: ${response.status})` }));
+            throw new Error(`HTTP error fetching result! status: ${response.status}, message: ${errorData.detail || errorData.message || 'Unknown error'}`);
         }
 
         const result = await response.json();
         console.log('Generation Result:', result);
 
+        // Update final status message based on detailed result
         if (result.status === 'FAILURE') {
              addStatusMessage(`Generation failed: ${result.error_message || 'No specific error message provided.'}`, 'FAILURE', taskId);
         } else if (result.status === 'SUCCESS' && result.song_paths && result.song_paths.length > 0) {
-            addStatusMessage(`Generation successful!`, 'SUCCESS', taskId);
+            addStatusMessage(`Generation successful! Rendering result.`, 'SUCCESS', taskId);
             renderResult(result);
-        } else if (result.status !== 'FAILURE') {
-            addStatusMessage(`Unexpected status: ${result.status}. Full response logged to console.`, 'info', taskId);
+        } else if (result.status === 'SUCCESS') {
+            addStatusMessage(`Generation status is SUCCESS, but no song paths found. Check API response.`, 'FAILURE', taskId); // Treat as failure for UI
+             console.warn("Success status but no song paths:", result);
+        } else {
+            // Should have been caught by isFailure earlier, but handle unexpected intermediate statuses
+             addStatusMessage(`Fetched result with unexpected status: ${result.status}. Full response logged.`, 'info', taskId);
         }
-         generateButton.disabled = false; // Re-enable button after completion/failure
+        generateButton.disabled = false; // Re-enable button after final result/failure
 
     } catch (error) {
-        handleApiError(error, taskId);
+        handleApiError(error, taskId); // Log the error for the specific task
+        generateButton.disabled = false; // Re-enable button on fetch error
     }
 }
 
@@ -167,23 +201,39 @@ function renderResult(result) {
     resultDiv.classList.add('result-item');
 
     let content = `<h3>Task ID: ${result.id}</h3>`;
-    content += `<p><strong>Status:</strong> ${result.status}</p>`;
-    if (result.prompt) content += `<p><strong>Prompt:</strong> ${result.prompt}</p>`;
+    content += `<p><strong>Status:</strong> <span class="status-${result.status}">${result.status}</span></p>`;
+    if (result.prompt !== null && result.prompt !== undefined) content += `<p><strong>Prompt:</strong> ${result.prompt || '<i>(empty)</i>'}</p>`;
     if (result.tags && result.tags.length > 0) content += `<p><strong>Tags:</strong> ${result.tags.join(', ')}</p>`;
     if (result.lyrics) content += `<p><strong>Lyrics:</strong><br>${result.lyrics.replace(/\n/g, '<br>')}</p>`; // Preserve line breaks
-    if (result.seed) content += `<p><strong>Seed:</strong> ${result.seed}</p>`;
-    // Add other relevant details like format, bitrate etc. if needed from the result object
+    if (result.seed !== null) content += `<p><strong>Seed:</strong> ${result.seed}</p>`;
+    if (result.prompt_strength !== null) content += `<p><strong>Prompt Strength:</strong> ${result.prompt_strength}</p>`;
+    if (result.instrumental) content += `<p><strong>Instrumental:</strong> Yes</p>`;
+    if (result.output_format) content += `<p><strong>Format:</strong> ${result.output_format}${result.output_bit_rate ? ` (${result.output_bit_rate} kbps)` : ''}</p>`;
 
 
     if (result.song_paths && result.song_paths.length > 0) {
         result.song_paths.forEach((path, index) => {
+            // Basic filename extraction (might need refinement)
+            let filename = `sonauto_${result.id}_${index}.${result.output_format || 'ogg'}`;
+            try {
+                 // Attempt to get filename from URL path
+                const urlParts = new URL(path).pathname.split('/');
+                const potentialFilename = urlParts[urlParts.length - 1];
+                 // Basic check if it looks like a filename with extension
+                if (potentialFilename && potentialFilename.includes('.')) {
+                    filename = potentialFilename;
+                }
+            } catch (e) {
+                console.warn("Could not parse URL to extract filename:", path);
+            }
+
             content += `
                 <p><strong>Song ${index + 1}:</strong></p>
                 <audio controls src="${path}">
                     Your browser does not support the audio element.
                 </audio>
-                <p><a href="${path}" target="_blank" download="sonauto_song_${result.id}_${index}.ogg">Download Song ${index + 1}</a></p>
-            `; // Note: Download attribute might need adjustment based on actual filename/format
+                <p><a href="${path}" target="_blank" download="${filename}">Download Song ${index + 1}</a></p>
+            `;
         });
     } else if (result.status !== 'FAILURE') {
         content += `<p>No song paths found, but status is ${result.status}.</p>`;
@@ -195,7 +245,8 @@ function renderResult(result) {
 
 
     resultDiv.innerHTML = content;
-    resultsContainer.appendChild(resultDiv);
+    // Prepend new results to the top
+    resultsContainer.prepend(resultDiv);
 }
 
 // Handle form submission
@@ -208,51 +259,77 @@ generateForm.addEventListener('submit', async (e) => {
     }
 
     generateButton.disabled = true;
-    addStatusMessage('Sending generation request...');
+    // Clear previous status messages for new request *or* keep old ones? Let's keep old ones for now.
+    // statusMessages.innerHTML = '<p>Sending generation request...</p>';
+     addStatusMessage('Sending generation request...', 'info');
+
+
+    const promptVal = document.getElementById('prompt').value.trim();
+    const tagsVal = document.getElementById('tags').value.split(',').map(tag => tag.trim()).filter(tag => tag);
+    const lyricsVal = document.getElementById('lyrics').value.trim() || null; // Treat empty textarea as null
+    const instrumentalVal = document.getElementById('instrumental').checked;
+    const seedVal = document.getElementById('seed').value ? parseInt(document.getElementById('seed').value, 10) : null;
+    const promptStrengthVal = document.getElementById('promptStrength').value ? parseFloat(document.getElementById('promptStrength').value) : null; // Default handled by API (2.3)
+    const numSongsVal = document.getElementById('numSongs').value ? parseInt(document.getElementById('numSongs').value, 10) : 1; // Default to 1
+    const outputFormatVal = outputFormatSelect.value;
+    const outputBitRateVal = (outputFormatVal === 'mp3' || outputFormatVal === 'm4a') && outputBitRateSelect.value
+                             ? parseInt(outputBitRateSelect.value, 10)
+                             : null;
 
 
     const payload = {
-        prompt: document.getElementById('prompt').value.trim() || null,
-        tags: document.getElementById('tags').value.split(',').map(tag => tag.trim()).filter(tag => tag),
-        lyrics: document.getElementById('lyrics').value.trim() || null,
-        instrumental: document.getElementById('instrumental').checked,
-        seed: parseInt(document.getElementById('seed').value, 10) || null,
-        output_format: outputFormatSelect.value,
-        output_bit_rate: parseInt(outputBitRateSelect.value, 10) || null,
-        // num_songs: 1, // Default, can add UI later if needed
+        prompt: promptVal, // Send even if empty string, API handles it
+        tags: tagsVal.length > 0 ? tagsVal : null,
+        lyrics: lyricsVal,
+        instrumental: instrumentalVal,
+        seed: seedVal,
+        prompt_strength: promptStrengthVal,
+        num_songs: numSongsVal,
+        output_format: outputFormatVal,
+        output_bit_rate: outputBitRateVal
     };
 
-    // Remove null/empty values to avoid sending them unless explicitly allowed by API
+    // Clean payload: Remove null values, except for prompt which can be explicitly ""
     Object.keys(payload).forEach(key => {
-        if (payload[key] === null || (Array.isArray(payload[key]) && payload[key].length === 0)) {
-             // Allow empty string for prompt, but remove other nulls/empty arrays
-            if (key !== 'prompt' || payload[key] === null) { // Keep prompt if it's "" but not if null
-                 delete payload[key];
-            }
+        if (payload[key] === null) {
+           delete payload[key];
         }
     });
 
+     // Validation based on API rules
+    const hasPrompt = payload.hasOwnProperty('prompt'); // Check if key exists, even if ""
+    const hasTags = payload.tags && payload.tags.length > 0;
+    const hasLyrics = payload.lyrics && payload.lyrics.length > 0;
 
-    // API requires at least one of tags, lyrics, or prompt
-    if (!payload.tags && !payload.lyrics && !payload.prompt && payload.prompt !== "") {
+    if (!hasPrompt && !hasTags && !hasLyrics) {
          alert('Please provide at least one of: Prompt, Tags, or Lyrics.');
          addStatusMessage('Generation failed: Missing required input (Prompt, Tags, or Lyrics).', 'FAILURE');
          generateButton.disabled = false;
          return;
     }
-    if (payload.instrumental && payload.lyrics) {
+    if (payload.instrumental && hasLyrics) {
         alert('Cannot provide lyrics for an instrumental song.');
         addStatusMessage('Generation failed: Cannot provide lyrics for an instrumental song.', 'FAILURE');
         generateButton.disabled = false;
         return;
     }
-     if (!payload.instrumental && !payload.tags && !payload.prompt && payload.prompt !== "") {
-        // Non-instrumental needs prompt or tags if no lyrics provided
-        alert('Please provide a Prompt or Tags if not providing Lyrics for a non-instrumental song.');
-        addStatusMessage('Generation failed: Missing Prompt or Tags for non-instrumental song without lyrics.', 'FAILURE');
-        generateButton.disabled = false;
-        return;
-    }
+     // Rule: "For instrumental songs ... only the tags or prompt can be set"
+    if (payload.instrumental && !(hasPrompt || hasTags)) {
+         alert('For instrumental songs, please provide a Prompt or Tags.');
+         addStatusMessage('Generation failed: Instrumental song requires Prompt or Tags.', 'FAILURE');
+         generateButton.disabled = false;
+         return;
+     }
+     // Rule: "Providing only lyrics or tags (without a prompt) is not supported. However, you can pass an empty string as the prompt"
+     // This implies if lyrics or tags are provided, prompt MUST be present (even if "").
+     // The payload cleaning ensures prompt:"" is sent if user leaves it blank.
+     // Let's double check if ONLY lyrics or ONLY tags is sent.
+     if ((hasLyrics || hasTags) && !hasPrompt) {
+        // This case should technically not happen if the user leaves prompt blank,
+        // because payload.prompt will be "". But if JS somehow sets it to null/undefined...
+         console.warn("Attempting to send only Lyrics or Tags without a prompt key. Adding empty prompt.");
+         payload.prompt = ""; // Ensure prompt key exists if lyrics/tags are sent
+     }
 
 
     console.log('Sending payload:', JSON.stringify(payload, null, 2)); // Log payload for debugging
@@ -272,8 +349,14 @@ generateForm.addEventListener('submit', async (e) => {
         });
 
         if (!response.ok) {
-             const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response.' }));
-             throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.detail || errorData.message || 'Unknown error'}`); // Sonauto might use 'detail'
+             // Try to parse JSON error first, fallback to text
+             let errorData;
+             try {
+                 errorData = await response.json();
+             } catch (e) {
+                 errorData = { message: await response.text() || 'Failed to parse error response.' };
+             }
+             throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.detail || errorData.message || 'Unknown API error'}`);
         }
 
         const data = await response.json();
@@ -281,12 +364,13 @@ generateForm.addEventListener('submit', async (e) => {
             addStatusMessage(`Request successful! Task ID: ${data.task_id}. Starting status check.`, 'info', data.task_id);
             checkStatus(data.task_id); // Start polling
         } else {
-             throw new Error('No task_id received in response.');
+             throw new Error('API response successful but did not contain task_id.');
         }
 
     } catch (error) {
-        handleApiError(error);
-        generateButton.disabled = false; // Ensure button is re-enabled
+         // Handle errors specifically from the initial POST request
+        handleApiError(error); // Don't pass taskId here, it's a general submit error
+        generateButton.disabled = false; // Ensure button is re-enabled on submit failure
     }
 });
 
@@ -294,24 +378,29 @@ generateForm.addEventListener('submit', async (e) => {
 // Bitrate select logic
 outputFormatSelect.addEventListener('change', () => {
     const selectedFormat = outputFormatSelect.value;
+    const bitrateContainer = outputBitRateSelect.parentElement; // Assuming label is parent
     if (selectedFormat === 'mp3' || selectedFormat === 'm4a') {
         outputBitRateSelect.disabled = false;
-        outputBitRateSelect.parentElement.style.display = ''; // Show label too
+        bitrateContainer.style.display = ''; // Show label+select
     } else {
         outputBitRateSelect.disabled = true;
         outputBitRateSelect.value = ''; // Reset value
-        outputBitRateSelect.parentElement.style.display = 'none'; // Hide label too
+        bitrateContainer.style.display = 'none'; // Hide label+select
     }
 });
 
 // Initial setup
 updateKeyStatus();
-// Initial state for bitrate select
-outputBitRateSelect.disabled = true;
-outputBitRateSelect.parentElement.style.display = 'none';
+// Initial state for bitrate select based on default format (ogg)
+const initialFormat = outputFormatSelect.value;
+const initialBitrateContainer = outputBitRateSelect.parentElement;
+if (initialFormat === 'mp3' || initialFormat === 'm4a') {
+    outputBitRateSelect.disabled = false;
+    initialBitrateContainer.style.display = '';
+} else {
+    outputBitRateSelect.disabled = true;
+    initialBitrateContainer.style.display = 'none';
+}
 
-// Clear placeholder if API key is already saved and user starts typing etc.
-// (This example focuses on core functionality, more sophisticated UI state handling can be added)
 
 console.log('Sonauto API Tester script loaded.');
-

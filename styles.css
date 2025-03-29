@@ -26,24 +26,38 @@ h1, h2 {
 label {
     display: block;
     margin-bottom: 5px;
+    margin-top: 10px; 
     font-weight: bold;
 }
+/* Target labels immediately following specific input types or selects */
+input[type="text"] + label,
+input[type="password"] + label,
+input[type="number"] + label,
+textarea + label,
+select + label,
+.checkbox-container + label {
+     margin-top: 15px;
+}
+
 
 input[type="text"],
 input[type="password"],
 input[type="number"],
 textarea,
 select {
-    width: calc(100% - 22px); /* Account for padding and border */
+    width: calc(100% - 22px); 
     padding: 10px;
-    margin-bottom: 15px;
+    margin-bottom: 5px; 
     border: 1px solid #ccc;
     border-radius: 4px;
     box-sizing: border-box;
+    font-size: 1rem; 
 }
+
 
 textarea {
     resize: vertical;
+    min-height: 60px;
 }
 
 button {
@@ -55,6 +69,7 @@ button {
     cursor: pointer;
     font-size: 16px;
     transition: background-color 0.3s ease;
+    margin-top: 20px; 
 }
 
 button:hover {
@@ -80,23 +95,29 @@ button:disabled {
     display: inline-block;
     margin-right: 10px;
     width: auto;
+    margin-top: 0; 
+    vertical-align: middle; 
 }
 .auth-section input[type="password"] {
-     width: calc(100% - 200px); /* Adjust width based on label and button */
+     width: calc(100% - 200px); 
      display: inline-block;
      margin-right: 10px;
+     margin-bottom: 0; 
+     vertical-align: middle;
 }
 .auth-section button {
     display: inline-block;
     vertical-align: middle;
-    padding: 10px 15px; /* Slightly smaller button */
+    padding: 10px 15px; 
     font-size: 14px;
+     margin-top: 0; 
 }
 .key-status {
     display: inline-block;
     margin-left: 15px;
     font-style: italic;
     color: #7f8c8d;
+    vertical-align: middle;
 }
 .key-status.saved {
     color: #27ae60;
@@ -104,39 +125,51 @@ button:disabled {
 }
 
 .checkbox-container {
-    margin-bottom: 15px;
+    margin-bottom: 5px; 
+    margin-top: 15px; 
     display: flex;
     align-items: center;
 }
 .checkbox-container input[type="checkbox"] {
     margin-right: 8px;
-    width: auto; /* Reset width for checkbox */
+    margin-bottom: 0; 
+    width: auto; 
 }
 .checkbox-container label {
-    margin-bottom: 0; /* Reset margin for checkbox label */
+    margin-bottom: 0; 
+    margin-top: 0; 
     font-weight: normal;
 }
 
 
 #statusMessages p,
-#resultsContainer p:first-child {
+#resultsContainer p:first-child:not(.result-item) { 
     color: #7f8c8d;
     font-style: italic;
 }
 
 #statusMessages .status-update {
     margin-bottom: 8px;
-    padding: 8px;
+    padding: 10px 12px;
     border-radius: 4px;
     background-color: #e0e0e0;
+    font-family: monospace; 
+    font-size: 0.9em;
+    word-wrap: break-word; 
+}
+#statusMessages .status-update.info {
+     background-color: #e0eaf0; 
+     color: #34495e;
 }
 #statusMessages .status-update.SUCCESS {
     background-color: #d4edda;
     color: #155724;
+    font-weight: bold;
 }
 #statusMessages .status-update.FAILURE {
     background-color: #f8d7da;
     color: #721c24;
+    font-weight: bold;
 }
 
 .result-item {
@@ -147,16 +180,43 @@ button:disabled {
     background-color: #f9f9f9;
 }
 
+.result-item h3 {
+    margin-top: 0;
+    font-size: 1.1em;
+    color: #3498db;
+    word-break: break-all; 
+}
+
+
 .result-item audio {
     width: 100%;
     margin-top: 10px;
+    margin-bottom: 5px;
 }
 
 .result-item p {
-    margin: 5px 0;
+    margin: 8px 0;
+    font-size: 0.95em;
+    line-height: 1.5;
 }
 .result-item strong {
     color: #34495e;
+    margin-right: 5px;
+}
+.result-item span.status-SUCCESS {
+    color: #27ae60;
+    font-weight: bold;
+}
+.result-item span.status-FAILURE {
+    color: #e74c3c;
+    font-weight: bold;
+}
+.result-item a {
+    color: #3498db;
+    text-decoration: none;
+}
+.result-item a:hover {
+    text-decoration: underline;
 }
 
 .error-message {
@@ -167,5 +227,5 @@ button:disabled {
     background-color: #fceded;
     border: 1px solid #e74c3c;
     border-radius: 4px;
+    font-size: 0.9em;
 }
-
