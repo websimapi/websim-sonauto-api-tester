@@ -141,6 +141,12 @@ button:disabled {
     font-weight: normal;
 }
 
+label[for="outputBitRate"] + select:disabled,
+label[for="outputBitRate"] select:disabled {
+}
+
+.bitrate-container { 
+}
 
 #statusMessages p,
 #resultsContainer p:first-child:not(.result-item) { 
@@ -187,7 +193,6 @@ button:disabled {
     word-break: break-all; 
 }
 
-
 .result-item audio {
     width: 100%;
     margin-top: 10px;
@@ -198,6 +203,13 @@ button:disabled {
     margin: 8px 0;
     font-size: 0.95em;
     line-height: 1.5;
+}
+.result-item p small {
+    display: block; 
+    color: #7f8c8d;
+    font-size: 0.85em;
+    margin-top: 5px;
+    word-break: break-all;
 }
 .result-item strong {
     color: #34495e;
