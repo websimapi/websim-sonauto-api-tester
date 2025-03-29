@@ -1,6 +1,32 @@
-import { API_BASE_URL, CORS_PROXIES } from 'config';
+import { API_BASE_URL, CORS_PROXIES, POLLING_INTERVAL_MS } from 'config';
 
 // --- Helper Functions ---
+
+/**
+ * Constructs the full URL to try, handling different proxy formats.
+ * @param {string} proxy - The proxy base URL from CORS_PROXIES.
+ * @param {string} targetUrl - The original target API URL.
+ * @returns {string} The full URL including the proxy.
+ */
+function constructProxyUrl(proxy, targetUrl) {
+    if (proxy.endsWith('/')) {
+        // Path-based proxy (e.g., https://proxy.cors.sh/)
+        return `${proxy}${targetUrl}`;
+    } else if (proxy.endsWith('?')) {
+         // Simple query param (e.g., https://corsproxy.io/?)
+        return `${proxy}${targetUrl}`;
+    } else if (proxy.endsWith('url=')) {
+        // Query param 'url' (e.g., https://api.cors.lol/?url=)
+        return `${proxy}${encodeURIComponent(targetUrl)}`;
+    } else if (proxy.endsWith('quest=')) {
+         // Query param 'quest' (e.g., https://api.codetabs.com/v1/proxy?quest=)
+         return `${proxy}${encodeURIComponent(targetUrl)}`;
+    } else {
+        console.warn(`Unknown proxy format: ${proxy}. Assuming simple prepend.`);
+        return `${proxy}${targetUrl}`;
+    }
+}
+
 
 /**
  * General purpose fetch wrapper for Sonauto API, attempting direct access
@@ -16,68 +42,126 @@ async function callSonautoApi(endpoint, method, apiKey, body = null) {
     const directUrl = `${API_BASE_URL}${endpoint}`;
     const urlsToTry = [
         directUrl,
-        ...CORS_PROXIES.map(proxy => `${proxy}${directUrl}`) // Construct proxy URLs
+        ...CORS_PROXIES.map(proxy => constructProxyUrl(proxy, directUrl)) // Construct proxy URLs correctly
     ];
 
-    const headers = {
+    const baseHeaders = {
         'Authorization': `Bearer ${apiKey}`,
-        // Some proxies might require specifying the origin or other headers,
-        // but start simple. 'x-requested-with' might help with some proxies.
-        // 'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest' // Might help some proxies
     };
+
     const options = {
         method: method,
-        headers: headers,
-        // 'mode': 'cors' is the default and required for reading the response.
-        // 'no-cors' would hide the CORS error but make the response opaque and unusable.
+        headers: { ...baseHeaders }, // Clone base headers
+        // 'mode': 'cors' is the default.
+        // 'cache': 'no-cache', // Might help bypass stale proxy responses, uncomment if needed
     };
 
     if (body && (method === 'POST' || method === 'PUT')) {
-        headers['Content-Type'] = 'application/json';
+        options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(body);
     }
+
+     // Add specific headers required by some proxies IF we know them
+     // Example for proxy.cors.sh if it required a key:
+     // if (url.startsWith('https://proxy.cors.sh/')) {
+     //    options.headers['x-cors-api-key'] = 'YOUR_CORS_SH_API_KEY'; // Replace with actual key if needed
+     // }
+
 
     let lastError = null;
 
     for (const url of urlsToTry) {
-        console.log(`Attempting API call to: ${url}`);
+        console.log(`Attempting API call: ${method} ${url}`);
         try {
+            // Clear potential proxy-specific headers from previous attempts if needed
+            // (Currently not adding proxy-specific headers, so this is commented out)
+            // options.headers = { ...baseHeaders }; // Reset to base
+            // if (body && (method === 'POST' || method === 'PUT')) {
+            //     options.headers['Content-Type'] = 'application/json';
+            // }
+            // // Re-apply specific headers for *this* URL if necessary
+            // if (url.startsWith('...')) { options.headers['...'] = '...' }
+
+
             const response = await fetch(url, options);
+
+            // Log response status regardless of success/failure for debugging
+            console.log(`Response Status from ${url}: ${response.status} ${response.statusText}`);
+
 
             if (!response.ok) {
                 let errorData;
                 const contentType = response.headers.get("content-type");
+                const responseText = await response.text(); // Read text first for better debugging
+
                 try {
-                    if (contentType && contentType.indexOf("application/json") !== -1) {
-                        errorData = await response.json();
+                     // Attempt to parse as JSON only if content type suggests it
+                    if (contentType && contentType.includes("application/json") && responseText) {
+                        errorData = JSON.parse(responseText);
                     } else {
-                        const textError = await response.text();
-                        errorData = { message: textError || `Request failed with status: ${response.status}` };
+                        // Otherwise use the text directly
+                         errorData = { message: responseText || `Request failed with status: ${response.status}` };
                     }
                 } catch (e) {
-                    errorData = { message: `Failed to parse error response (Status: ${response.status})` };
+                     // If JSON parsing failed or content type was wrong, use the text we read
+                     console.warn(`Failed to parse potential JSON error response from ${url}:`, e);
+                     errorData = { message: `Failed to parse error response (Status: ${response.status}). Body: ${responseText}` };
                 }
-                const errorMessage = errorData.detail || errorData.message || 'Unknown API error';
-                 // Store the error but continue to try next URL unless it's the last one
-                lastError = new Error(`API Error (${response.status}) via ${url}: ${errorMessage}`);
+                // Try to extract a meaningful message
+                 const errorMessage = errorData.detail || errorData.message || 'Unknown API error';
+                 // Distinguish CORS errors from API errors
+                 let errorPrefix = `API Error (${response.status})`;
+                 if (response.status === 0 || response.type === 'opaque' || response.type === 'error') {
+                     errorPrefix = `Network/CORS Error`; // Status might be 0 for CORS block
+                 }
+                 lastError = new Error(`${errorPrefix} via ${url}: ${errorMessage}`);
                  console.warn(`Attempt failed: ${lastError.message}`);
+
+                 // Don't automatically continue if it's a 4xx error from the *API* (not the proxy)
+                 // e.g., 401 Unauthorized (bad key), 400 Bad Request (bad payload)
+                 // These errors won't be fixed by trying another proxy.
+                 if (url === directUrl && response.status >= 400 && response.status < 500) {
+                     console.error(`Received ${response.status} from direct API call, stopping retries.`);
+                     throw lastError;
+                 }
+
                  if (url === urlsToTry[urlsToTry.length - 1]) {
                     throw lastError; // Throw if it's the last attempt
                  }
                  continue; // Try the next URL
             }
 
-            // Handle successful response
+            // --- Handle successful response ---
             console.log(`Successfully connected via: ${url}`);
             const contentType = response.headers.get("content-type");
-            if (contentType && contentType.indexOf("text/plain") !== -1) {
-                return await response.text(); // Handle plain text for status
+
+            // Handle plain text specifically for the status endpoint
+            if (endpoint.startsWith('/generations/status/') && contentType && contentType.includes("text/plain")) {
+                 return await response.text();
+            }
+            if (endpoint.startsWith('/generations/status/')) {
+                // If status endpoint didn't return text/plain, read as text anyway for debugging
+                const statusText = await response.text();
+                console.warn(`Status endpoint ${url} returned content-type ${contentType}, not text/plain. Response body: ${statusText}`);
+                // Attempt to return the text, hoping it's the status string
+                return statusText;
             }
 
+
+            // For other endpoints, expect JSON
             try {
-                return await response.json(); // Default to JSON
+                // Check if response is empty before trying to parse JSON
+                // Clone response to read text without consuming body for JSON parsing later
+                const responseClone = response.clone();
+                const responseText = await responseClone.text();
+                if (!responseText) {
+                     console.warn(`Received empty response body from ${url}. Returning null.`);
+                     return null; // Or {} depending on expected structure
+                }
+                return await response.json();
             } catch (e) {
-                console.error("Failed to parse JSON response", e);
+                console.error(`Failed to parse JSON response from ${url}:`, e);
                 // Store the error but continue to try next URL unless it's the last one
                 lastError = new Error(`Received non-JSON response when JSON was expected from ${url}.`);
                  console.warn(`Attempt failed: ${lastError.message}`);
@@ -89,17 +173,23 @@ async function callSonautoApi(endpoint, method, apiKey, body = null) {
 
         } catch (error) {
              // Catch fetch errors (TypeError likely for CORS, network errors)
-             console.warn(`Fetch error for ${url}:`, error);
-             lastError = error; // Store the error
+             console.warn(`Fetch/Network error for ${url}:`, error);
+             // Make error message more specific if possible
+             let specificMessage = error.message || 'Network error or CORS issue.';
+             if (error instanceof TypeError && error.message.toLowerCase().includes('failed to fetch')) {
+                 // This often indicates a CORS preflight failure or network blockage
+                 specificMessage = `Failed to fetch (possible CORS preflight failure or network issue): ${error.message}`;
+             }
+             lastError = new Error(specificMessage); // Store the error
              if (url === urlsToTry[urlsToTry.length - 1]) {
                 // If this was the last URL to try, throw the accumulated error
-                throw new Error(`All API call attempts failed. Last error: ${lastError.message || 'Network error or CORS issue.'}`);
+                throw new Error(`All API call attempts failed. Last error for ${url}: ${lastError.message}`);
              }
              // Otherwise, loop continues to the next URL
         }
     }
 
-    // Should not be reached if urlsToTry is not empty, but as a fallback:
+    // Should only be reached if urlsToTry is empty, which shouldn't happen.
     throw lastError || new Error("API call failed after trying all options.");
 }
 
@@ -115,6 +205,7 @@ export async function submitGenerationRequest(apiKey, payload) {
     if (!apiKey) throw new Error('API Key is required.');
     // Add webhook_url if needed for future features, but not required for basic polling
     // payload.webhook_url = "YOUR_WEBHOOK_URL"; // Example
+    console.log("Submitting generation with payload:", payload);
     return callSonautoApi('/generations', 'POST', apiKey, payload);
 }
 
@@ -147,68 +238,121 @@ export async function pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, 
     }
 
     const statusEndpoint = `/generations/status/${taskId}`; // Endpoint only
+    let timeoutId; // To store the setTimeout ID for potential cancellation
 
-    try {
-        // CallSonautoApi now handles direct/proxy attempts
-        const status = await callSonautoApi(statusEndpoint, 'GET', apiKey);
-        console.log(`Task ${taskId} Status: ${status}`);
+    const poll = async () => {
+        try {
+            // CallSonautoApi now handles direct/proxy attempts and returns text for status
+            const status = await callSonautoApi(statusEndpoint, 'GET', apiKey);
 
-        let messageType = 'info';
-        if (status === 'SUCCESS') messageType = 'SUCCESS';
-        if (status === 'FAILURE') messageType = 'FAILURE';
-        // Add more detailed status mapping if desired
-         else if (status.includes('GENERATE') || status.includes('LOADING') || status.includes('DECOMPRESSING') || status.includes('SAVING')) messageType = 'progress'; // Custom type for progress
-         else if (status.includes('TRANSCRIBE')) messageType = 'transcribe'; // Custom type for transcribe steps
+             // Basic validation of the status string format
+             if (typeof status !== 'string' || !status.trim()) {
+                console.warn(`Received unexpected status type or empty string: ${JSON.stringify(status)}. Stopping polling.`);
+                throw new Error(`Invalid status received: ${JSON.stringify(status)}`);
+             }
+
+            const currentStatus = status.trim().toUpperCase(); // Normalize status
+            console.log(`Task ${taskId} Status: ${currentStatus}`);
 
 
-        // Update UI with the status string received
-        onUpdate(`Status: ${status}`, messageType); // Pass raw status for clarity
-
-        if (status === 'SUCCESS' || status === 'FAILURE') {
-            try {
-                 onUpdate(`Fetching final result...`, 'info');
-                 // fetchGenerationResult also uses callSonautoApi now
-                const result = await fetchGenerationResult(taskId, apiKey);
-                console.log('Generation Result:', result);
-
-                // Double-check final status from the detailed result
-                 if (result.status === 'FAILURE') {
-                     const failureMsg = `Generation failed: ${result.error_message || 'No specific error message provided.'}`;
-                     onUpdate(failureMsg, 'FAILURE');
-                     onFailure(new Error(result.error_message || 'Generation failed.'));
-                 } else if (result.status === 'SUCCESS' && result.song_paths && result.song_paths.length > 0) {
-                     onUpdate(`Generation successful! Rendering result.`, 'SUCCESS');
-                     onSuccess(result);
-                 } else if (result.status === 'SUCCESS') {
-                     const warnMsg = `Generation status is SUCCESS, but no song paths found. Check API response.`;
-                     onUpdate(warnMsg, 'FAILURE'); // Treat as failure for UI
-                     console.warn("Success status but no song paths:", result);
-                     onFailure(new Error('Generation successful but no song paths returned.'));
-                 } else {
-                    // Should not happen if initial status was SUCCESS/FAILURE, but handle defensively
-                     const unexpectedMsg = `Fetched result with unexpected status: ${result.status}.`;
-                     onUpdate(unexpectedMsg, 'FAILURE');
-                      onFailure(new Error(unexpectedMsg));
-                 }
-
-            } catch (fetchError) {
-                console.error(`Error fetching final result for task ${taskId}:`, fetchError);
-                onUpdate(`Error fetching final result: ${fetchError.message}`, 'FAILURE');
-                onFailure(fetchError); // Report the fetching error
-            } finally {
-                 if(onFinally) onFinally(); // Ensure button is re-enabled etc.
+            let messageType = 'info';
+             // More robust status mapping
+            switch(currentStatus) {
+                case 'RECEIVED':
+                case 'PROMPT':
+                case 'TASK_SENT':
+                    messageType = 'info';
+                    break;
+                case 'TRANSCRIBE_TASK_STARTED':
+                case 'TRANSCRIBE_STAGE_1':
+                case 'TRANSCRIBE_STAGE_2':
+                case 'TRANSCRIBE_STAGE_3':
+                case 'TRANSCRIBE_DONE':
+                case 'GENERATE_TASK_STARTED':
+                case 'LOADING_SOURCE':
+                case 'BEGINNING_GENERATION':
+                case 'GENERATING':
+                case 'DECOMPRESSING':
+                case 'SAVING':
+                    messageType = 'progress';
+                    break;
+                case 'SUCCESS':
+                    messageType = 'SUCCESS';
+                    break;
+                case 'FAILURE':
+                    messageType = 'FAILURE';
+                    break;
+                default:
+                    console.warn(`Unknown status received: ${currentStatus}. Treating as info.`);
+                    messageType = 'info';
             }
-        } else {
-            // Poll again after a delay
-            setTimeout(() => pollGenerationStatus(taskId, apiKey, onUpdate, onSuccess, onFailure, onFinally), 5000); // Check every 5 seconds
+
+
+            // Update UI with the status string received
+            onUpdate(`Status: ${currentStatus}`, messageType);
+
+            // Terminal states
+            if (currentStatus === 'SUCCESS' || currentStatus === 'FAILURE') {
+                try {
+                     onUpdate(`Fetching final result...`, 'info');
+                    const result = await fetchGenerationResult(taskId, apiKey);
+
+                     // Check if result fetch actually returned something meaningful
+                     if (!result || typeof result !== 'object' || !result.id) {
+                         console.error(`Failed to fetch valid final result object for task ${taskId}. Received:`, result);
+                         throw new Error('Failed to retrieve valid final result details.');
+                     }
+                    console.log('Generation Result:', result);
+
+                    // Use the status from the detailed result as the final source of truth
+                     if (result.status === 'FAILURE') {
+                         const failureMsg = `Generation failed: ${result.error_message || 'No specific error message provided.'}`;
+                         onUpdate(failureMsg, 'FAILURE');
+                         onFailure(new Error(result.error_message || 'Generation failed.'));
+                     } else if (result.status === 'SUCCESS' && result.song_paths && result.song_paths.length > 0) {
+                         onUpdate(`Generation successful! Rendering result.`, 'SUCCESS');
+                         onSuccess(result);
+                     } else if (result.status === 'SUCCESS') {
+                         const warnMsg = `Generation status is SUCCESS, but no song paths found in the final result object.`;
+                         onUpdate(warnMsg, 'FAILURE'); // Treat as failure for UI if no songs
+                         console.warn("Success status but no song paths:", result);
+                         onFailure(new Error('Generation successful but no song paths returned.'));
+                     } else {
+                        // Status mismatch between polling and final result object
+                         const unexpectedMsg = `Polling ended with ${currentStatus}, but final result object has status ${result.status}. Error: ${result.error_message || 'None'}`;
+                         onUpdate(unexpectedMsg, 'FAILURE');
+                          onFailure(new Error(unexpectedMsg));
+                     }
+
+                } catch (fetchError) {
+                    console.error(`Error fetching final result for task ${taskId}:`, fetchError);
+                    onUpdate(`Error fetching final result: ${fetchError.message}`, 'FAILURE');
+                    onFailure(fetchError); // Report the fetching error
+                } finally {
+                     if(onFinally) onFinally(); // Ensure button is re-enabled etc.
+                }
+            } else {
+                // Poll again after a delay
+                timeoutId = setTimeout(poll, POLLING_INTERVAL_MS);
+            }
+        } catch (error) {
+            // This catches errors from callSonautoApi during status polling or result fetching (if thrown above)
+            console.error(`Error during polling/result fetch for task ${taskId}:`, error);
+             const pollErrorMsg = `Polling failed: ${error.message || 'Unknown polling error.'}`;
+            onUpdate(pollErrorMsg, 'FAILURE');
+            onFailure(error);
+             if(onFinally) onFinally();
         }
-    } catch (error) {
-        // This catches errors from callSonautoApi (after retries) during status polling
-        console.error(`Error polling status for task ${taskId}:`, error);
-         // Display a user-friendly message including the error detail
-         const pollErrorMsg = `Error checking status: ${error.message || 'Polling failed.'}`;
-        onUpdate(pollErrorMsg, 'FAILURE'); // Update status message with error
-        onFailure(error); // Report the polling error to the main script logic
-         if(onFinally) onFinally(); // Ensure button is re-enabled etc.
-    }
+    };
+
+    // Start the first poll
+    poll();
+
+     // Return a function to cancel the polling if needed externally
+     return () => {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+            console.log(`Polling cancelled for task ${taskId}.`);
+        }
+     };
 }
