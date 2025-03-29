@@ -176,6 +176,10 @@ label[for="outputBitRate"] select:disabled {
      background-color: #e0eaf0; 
      color: #34495e;
 }
+#statusMessages .status-update.progress {
+     background-color: #fff3cd; 
+     color: #856404; 
+}
 #statusMessages .status-update.SUCCESS {
     background-color: #d4edda;
     color: #155724;

@@ -23,7 +23,7 @@ export function updateKeyStatus(apiKey, keyStatusElement, apiKeyInput) {
 /**
  * Adds or updates a status message in the status area.
  * @param {string} message - The message content.
- * @param {string} type - Message type ('info', 'SUCCESS', 'FAILURE').
+ * @param {string} type - Message type ('info', 'SUCCESS', 'FAILURE', 'progress', 'transcribe').
  * @param {string|null} taskId - Optional task ID to update existing message.
  * @param {HTMLElement} statusMessagesContainer - The container for status messages.
  */
@@ -32,7 +32,6 @@ export function addStatusMessage(message, type = 'info', taskId = null, statusMe
 
      let existingMsg = null;
      if (taskId) {
-        // Use a more specific selector to avoid accidentally selecting the container's placeholder
         existingMsg = statusMessagesContainer.querySelector(`.status-update[data-task-id="${taskId}"]`);
      }
 
@@ -43,27 +42,31 @@ export function addStatusMessage(message, type = 'info', taskId = null, statusMe
         cssClass += ' SUCCESS';
     } else if (type === 'FAILURE') {
         cssClass += ' FAILURE';
+    } else if (type === 'progress' || type === 'transcribe') { // Added custom types
+        cssClass += ' progress'; // Use a common 'progress' style
     } else {
-        cssClass += ' info'; // Default or other intermediate statuses
+        cssClass += ' info'; // Default or other intermediate statuses like RECEIVED, PROMPT, TASK_SENT
     }
 
     if (existingMsg) {
         // Update existing status message for this task
         existingMsg.textContent = fullMessage;
-        existingMsg.className = cssClass; // Update class for styling
-        if(taskId) existingMsg.dataset.taskId = taskId; // Ensure data-task-id is present
+        // Only update class if it's different, potentially avoid minor visual flicker
+        if (existingMsg.className !== cssClass) {
+             existingMsg.className = cssClass;
+        }
+        if(taskId) existingMsg.dataset.taskId = taskId;
     } else {
-         // Add new status message
+        // Add new status message
         const p = document.createElement('p');
         p.textContent = fullMessage;
         p.className = cssClass;
         if (taskId) {
             p.dataset.taskId = taskId;
         }
-        // Remove placeholder if it exists and we're adding the first real message
         const placeholder = statusMessagesContainer.querySelector('p:not(.status-update)');
          if (placeholder && placeholder.textContent.includes('Submit a generation request')) {
-            statusMessagesContainer.innerHTML = ''; // Clear placeholder only once
+            statusMessagesContainer.innerHTML = ''; // Clear placeholder
         }
         statusMessagesContainer.appendChild(p);
     }
@@ -72,18 +75,34 @@ export function addStatusMessage(message, type = 'info', taskId = null, statusMe
 
 /**
  * Handles displaying API errors in the status messages area.
- * Also re-enables the generate button if the error is critical.
+ * Also re-enables the generate button if the error occurs during the initial request
+ * or if the polling function explicitly calls onFailure.
  * @param {Error} error - The error object.
  * @param {string|null} taskId - The associated task ID, if any.
  * @param {HTMLElement} statusMessagesContainer - The container for status messages.
  * @param {HTMLButtonElement} generateButton - The generate button element.
  */
 export function handleApiErrorUI(error, taskId = null, statusMessagesContainer, generateButton) {
-    console.error('API Error:', error);
-    // Attempt to provide a more specific error message if available
-    const message = `Error: ${error.message || 'An unknown error occurred.'}`;
+    console.error('API Error/UI Handler:', error);
+    // Try to get a cleaner message, especially from nested errors or API responses
+    let message = `Error: ${error.message || 'An unknown error occurred.'}`;
+    // Check if it's a network error that might include the URL tried
+    if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('NetworkError'))) {
+         message = `Network Error: Could not connect to the API or proxy. Please check your connection and API key. (${error.message})`;
+    } else if (error.message && error.message.startsWith('API Error')) {
+        // Keep the API error message as it likely contains useful info
+        message = error.message;
+    }
+
+
+    // Use addStatusMessage to display the error, associating with taskId if available
+    // If taskId is null, it's likely an initial submission error.
+    // If taskId exists, it's likely an error during polling or result fetching.
     addStatusMessage(message, 'FAILURE', taskId, statusMessagesContainer);
-    // Re-enable button on initial submit failure or definitive polling failure
+
+    // Re-enable button. The polling function's onFinally callback ALSO does this,
+    // but doing it here handles initial submission errors immediately.
+    // It's safe to call toggleGenerateButton(false) multiple times.
     if (generateButton) {
         toggleGenerateButton(false, generateButton);
     }
